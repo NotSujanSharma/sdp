@@ -1,0 +1,44 @@
+{
+  "pipeline_name": "bronze_to_silver_lakeflow",
+  "catalog": "main",
+  "schema": "silver",
+  "tables": [
+    {
+      "table_name": "customers",
+      "bronze_table": "main.bronze.customers",
+      "primary_keys": ["customer_id"],
+      "sequence_by": "updated_at",
+      "partition_by": ["country"],
+      "transformations": [
+        { "type": "rename",       "source_col": "cust_id", "target_col": "customer_id" },
+        { "type": "cast",         "column": "age",         "target_type": "integer" },
+        { "type": "upper",        "column": "country" },
+        { "type": "trim",         "column": "email" },
+        { "type": "replace_null", "column": "country",    "value": "UNKNOWN" }
+      ],
+      "expectations": [
+        { "name": "valid_customer_id", "constraint": "customer_id IS NOT NULL", "action": "drop" },
+        { "name": "valid_email",       "constraint": "email IS NOT NULL",        "action": "drop" },
+        { "name": "valid_age",         "constraint": "age > 0 AND age < 150",    "action": "warn" }
+      ]
+    },
+    {
+      "table_name": "orders",
+      "bronze_table": "main.bronze.orders",
+      "primary_keys": ["order_id"],
+      "sequence_by": "order_timestamp",
+      "partition_by": ["order_date"],
+      "transformations": [
+        { "type": "cast",    "column": "amount",          "target_type": "double" },
+        { "type": "cast",    "column": "order_timestamp", "target_type": "timestamp" },
+        { "type": "derived", "column": "order_date",      "expression": "to_date(order_timestamp)" },
+        { "type": "upper",   "column": "status" }
+      ],
+      "expectations": [
+        { "name": "valid_order_id",  "constraint": "order_id IS NOT NULL", "action": "drop" },
+        { "name": "positive_amount", "constraint": "amount > 0",           "action": "drop" },
+        { "name": "valid_status",    "constraint": "status IS NOT NULL",   "action": "warn" }
+      ]
+    }
+  ]
+}
