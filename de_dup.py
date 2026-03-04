@@ -8,42 +8,36 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql import Window
 
-
-class NullPosition(Enum):
-    FIRST = "first"   # treated as highest sequence value
-    LAST  = "last"    # treated as lowest sequence value
-
-
 class DeleteStrategy(Enum):
-    NONE        = "none"        # No deletes, ignore
-    SOFT_DELETE = "soft_delete" # is_deleted flag on the row
-    HARD_DELETE = "hard_delete" # cdf _change_type = 'delete' column
+    NONE   = "none"   # No deletes, ignore
+    DELETE = "delete" # delete_col/delete_value identify delete rows
 
 
 @dataclass
 class SequenceCol:
     name:       str
-    descending: bool          = True
-    null_pos:   NullPosition  = NullPosition.LAST
+    descending: bool = True
 
 
 class Deduplicator:
-    _RANK_COL = "__dedup_rank__"
-    _HASH_COL = "_dedup_row_hash"
+    _RANK_COL             = "__dedup_rank__"
+    _HASH_COL             = "_dedup_row_hash"
+    _DEFAULT_DELETE_COL   = "_change_type"
+    _DEFAULT_DELETE_VALUE = "delete"
 
     def __init__(
         self,
-        primary_keys:      list[str],
-        sequence_cols:     list[SequenceCol],
-        delete_strategy:   DeleteStrategy  = DeleteStrategy.NONE,
-        soft_delete_col:   Optional[str]   = None,
-        soft_delete_value: object          = True,
+        primary_keys:    list[str],
+        sequence_cols:   list[SequenceCol],
+        delete_strategy: DeleteStrategy = DeleteStrategy.NONE,
+        delete_col:      Optional[str]  = None,
+        delete_value:    object         = None,
     ):
-        self._primary_keys      = primary_keys
-        self._sequence_cols     = sequence_cols
-        self._delete_strategy   = delete_strategy
-        self._soft_delete_col   = soft_delete_col
-        self._soft_delete_value = soft_delete_value
+        self._primary_keys    = primary_keys
+        self._sequence_cols   = sequence_cols
+        self._delete_strategy = delete_strategy
+        self._delete_col      = delete_col   if delete_col   is not None else self._DEFAULT_DELETE_COL
+        self._delete_value    = delete_value if delete_value is not None else self._DEFAULT_DELETE_VALUE
         self._validate()
 
 
@@ -60,31 +54,19 @@ class Deduplicator:
         )
 
     @classmethod
-    def with_soft_delete(
-        cls,
-        primary_keys:      list[str],
-        sequence_by:       str,
-        soft_delete_col:   str,
-        soft_delete_value: object = True,
-    ) -> "Deduplicator":
-        return cls(
-            primary_keys      = primary_keys,
-            sequence_cols     = [SequenceCol(sequence_by, descending=True)],
-            delete_strategy   = DeleteStrategy.SOFT_DELETE,
-            soft_delete_col   = soft_delete_col,
-            soft_delete_value = soft_delete_value,
-        )
-
-    @classmethod
-    def with_hard_delete(
+    def with_delete(
         cls,
         primary_keys: list[str],
         sequence_by:  str,
+        delete_col:   Optional[str] = None,
+        delete_value: object        = None,
     ) -> "Deduplicator":
         return cls(
             primary_keys    = primary_keys,
             sequence_cols   = [SequenceCol(sequence_by, descending=True)],
-            delete_strategy = DeleteStrategy.HARD_DELETE,
+            delete_strategy = DeleteStrategy.DELETE,
+            delete_col      = delete_col,
+            delete_value    = delete_value,
         )
 
     @classmethod
@@ -127,12 +109,8 @@ class Deduplicator:
         if self._delete_strategy == DeleteStrategy.NONE:
             return None, df
 
-        if self._delete_strategy == DeleteStrategy.SOFT_DELETE:
-            delete_condition = (
-                F.col(self._soft_delete_col) == F.lit(self._soft_delete_value)
-            )
-        elif self._delete_strategy == DeleteStrategy.HARD_DELETE:
-            delete_condition = F.col("_change_type") == F.lit("delete")
+        if self._delete_strategy == DeleteStrategy.DELETE:
+            delete_condition = F.col(self._delete_col) == F.lit(self._delete_value)
         else:
             raise ValueError(f"Unknown delete_strategy: {self._delete_strategy}")
 
@@ -153,17 +131,9 @@ class Deduplicator:
         for seq_col in self._sequence_cols:
             col_expr = F.col(seq_col.name)
             if seq_col.descending:
-                ordered = (
-                    col_expr.desc_nulls_last()
-                    if seq_col.null_pos == NullPosition.LAST
-                    else col_expr.desc_nulls_first()
-                )
+                ordered = col_expr.desc_nulls_last()
             else:
-                ordered = (
-                    col_expr.asc_nulls_last()
-                    if seq_col.null_pos == NullPosition.LAST
-                    else col_expr.asc_nulls_first()
-                )
+                ordered = col_expr.asc_nulls_last()
             order_exprs.append(ordered)
 
         if self._HASH_COL in df.columns:
@@ -176,8 +146,6 @@ class Deduplicator:
             raise ValueError("primary_keys cannot be empty.")
         if not self._sequence_cols:
             raise ValueError("sequence_cols cannot be empty. Provide at least one SequenceCol.")
-        if self._delete_strategy == DeleteStrategy.SOFT_DELETE and not self._soft_delete_col:
-            raise ValueError("soft_delete_col is required when using with_soft_delete().")
 
 
 def dedup_simple(
@@ -197,21 +165,13 @@ def dedup_composite(
     return Deduplicator.composite(primary_keys, sequence_cols).run(df)
 
 
-def dedup_with_soft_delete(
-    df:                DataFrame,
-    primary_keys:      list[str],
-    sequence_by:       str,
-    soft_delete_col:   str,
-    soft_delete_value: object = True,
-) -> DataFrame:
-    return Deduplicator.with_soft_delete(
-        primary_keys, sequence_by, soft_delete_col, soft_delete_value
-    ).run(df)
-
-
-def dedup_with_hard_delete(
+def dedup_with_delete(
     df:           DataFrame,
     primary_keys: list[str],
     sequence_by:  str,
+    delete_col:   Optional[str] = None,
+    delete_value: object        = None,
 ) -> DataFrame:
-    return Deduplicator.with_hard_delete(primary_keys, sequence_by).run(df)
+    return Deduplicator.with_delete(
+        primary_keys, sequence_by, delete_col, delete_value
+    ).run(df)
