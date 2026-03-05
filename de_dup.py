@@ -20,7 +20,6 @@ class SequenceCol:
 
 
 class Deduplicator:
-    _RANK_COL             = "__dedup_rank__"
     _DEFAULT_DELETE_COL   = "_change_type"
     _DEFAULT_DELETE_VALUE = "delete"
 
@@ -87,9 +86,7 @@ class Deduplicator:
 
         deduped_df = (
             upsert_df
-            .withColumn(self._RANK_COL, F.row_number().over(window))
-            .filter(F.col(self._RANK_COL) == 1)
-            .drop(self._RANK_COL)
+            .filter(F.row_number().over(window) == 1)
         )
 
         if delete_df is not None:
