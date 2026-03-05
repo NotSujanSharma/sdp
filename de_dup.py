@@ -21,7 +21,6 @@ class SequenceCol:
 
 class Deduplicator:
     _RANK_COL             = "__dedup_rank__"
-    _HASH_COL             = "_dedup_row_hash"
     _DEFAULT_DELETE_COL   = "_change_type"
     _DEFAULT_DELETE_VALUE = "delete"
 
@@ -84,8 +83,6 @@ class Deduplicator:
     def run(self, df: DataFrame) -> DataFrame:
         delete_df, upsert_df = self._split_deletes(df)
 
-        upsert_df = self._add_row_hash(upsert_df)
-
         window = self._build_window(upsert_df)
 
         deduped_df = (
@@ -116,14 +113,6 @@ class Deduplicator:
 
         return df.filter(delete_condition), df.filter(~delete_condition)
 
-    def _add_row_hash(self, df: DataFrame) -> DataFrame:
-        all_cols = df.columns
-        hash_expr = F.md5(
-            F.concat_ws("||", *[F.coalesce(F.col(c).cast("string"), F.lit("NULL"))
-                                 for c in all_cols])
-        )
-        return df.withColumn(self._HASH_COL, hash_expr)
-
     def _build_window(self, df: DataFrame) -> Window:
         window = Window.partitionBy(*self._primary_keys)
 
@@ -135,9 +124,6 @@ class Deduplicator:
             else:
                 ordered = col_expr.asc_nulls_last()
             order_exprs.append(ordered)
-
-        if self._HASH_COL in df.columns:
-            order_exprs.append(F.col(self._HASH_COL).asc())
 
         return window.orderBy(*order_exprs)
 
